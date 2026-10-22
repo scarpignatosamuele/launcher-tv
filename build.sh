@@ -52,6 +52,13 @@ final class Config {
 
     static final String TMDB_KEY = "$(prop tmdb_key '')";
     static final String TMDB_REGION = "$(prop tmdb_region US)";
+    static final String GENRES_INCLUDE = "$(prop genres_include '')";
+    static final String GENRES_EXCLUDE = "$(prop genres_exclude '')";
+    static final String GOOGLE_CLIENT_ID = "$(prop google_client_id '')";
+    static final String GOOGLE_CLIENT_SECRET = "$(prop google_client_secret '')";
+    static final String YOUTUBE_KEY = "$(prop youtube_key '')";
+    static final String TWITCH_CLIENT_ID = "$(prop twitch_client_id '')";
+    static final String TWITCH_CLIENT_SECRET = "$(prop twitch_client_secret '')";
     static final String LATITUDE = "$LAT";
     static final String LONGITUDE = "$LON";
     static final String CITY = "$(prop city '')";

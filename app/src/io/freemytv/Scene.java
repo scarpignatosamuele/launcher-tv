@@ -163,9 +163,28 @@ final class Scene {
      * Liquid Glass in rectangle `r` (screen coordinates). band and refraction in px (the thick rim and how much it
      * bends the image), specular = rim highlight, alpha = opacity of the whole glass.
      */
+    /**
+     * Glass levels (Settings > Glass effect, #98), precomputed: how much of the gap to full opacity the tint closes
+     * (negative: more see-through), and the scale of the rim / highlight (specular, band) and of the refraction. Level
+     * 3 is the original look; 0 is a solid fill. Same shader, same single pass: no cost per level.
+     */
+    private static final float[] GLASS_FILL = {1f, 0.7f, 0.4f, 0f, -0.22f, -0.42f};
+    private static final float[] GLASS_RIM = {0.45f, 0.7f, 0.85f, 1f, 1.2f, 1.4f};
+    private static final float[] GLASS_BEND = {0f, 0.4f, 0.7f, 1f, 1.25f, 1.5f};
+
+    static float glassFill(float tintAlpha) {
+        float f = GLASS_FILL[Prefs.glass()];
+        return f >= 0 ? tintAlpha + (1 - tintAlpha) * f : tintAlpha * (1 + f);
+    }
+
     void liquid(Canvas c, RectF r, float radius, int tint, float tintAlpha, float lift, float band, float refraction,
                 float specular, float alpha) {
         if (alpha <= 0.004f) return;
+        int level = Prefs.glass();
+        tintAlpha = glassFill(tintAlpha);
+        band *= GLASS_RIM[level];
+        specular *= GLASS_RIM[level];
+        refraction *= GLASS_BEND[level];
         if (liquid == null) {
             glass(c, r, radius, tint, Math.max(0.5f, tintAlpha), 0, 0, lift, 1, alpha);
             return;

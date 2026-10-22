@@ -47,6 +47,19 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
     private static final float MARGIN = 80, RIGHT = 1840, TITLE_W = 900, META_BASE = 1008;
     private static final float DATE_BASE = 92, CLOCK_TOP = 120, CLOCK_SIZE = 200, QUOTES_GAP = 52;
     private static final double DRIFT_PERIOD_S = 600;
+    /** Where the corner text sits, as fractions of the photo (the photo spans the screen; the slow pan moves it <5%). */
+    // The two text blocks, as fractions of the screen (#92): A = date, weather and clock (top right), B = label, title
+    // and details (bottom left). Each picks its own ink from the new photo as it is shown there; within a block every
+    // element shares it.
+    private static final float[] REGION_A = {0.66f, 0.035f, 0.965f, 0.27f};
+    private static final float[] REGION_B = {0.035f, 0.69f, 0.52f, 0.955f};
+    private static final int DARK_INK = 0x1C1C1E;
+    private static final float DARK_INK_LUM = 0.0103f;   // its relative luminance (WCAG)
+    /** Minimum contrast ratio for a block; below it, a soft scrim (dark for white ink, light for dark ink) is added. */
+    private static final float MIN_CONTRAST = 3.5f;
+    /** The almost invisible blur behind each block (#94): downscale factor and how much of it shows (0 = off). */
+    static float BLUR_SCALE = 4, BLUR_STRENGTH = 0.6f;
+    private int inkRecorded = -1;   // the corner ink the chrome was recorded with
 
     /** One photo on screen: the image, its motion (zooming in or out, toward a corner) and its caption. */
     private static final class Slide {
@@ -54,6 +67,8 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         final Bitmap image, frost;
         final BitmapShader shader;    // the frosted version, for the clock's glass
         final float lightCaption, lightClock;
+        boolean darkInk;              // the corner's text (clock, date, weather) in near-black: the photo is light there
+        boolean captionDark;          // the caption's text (label, title, details) in near-black
         final boolean zoomIn;
         final float panX, panY;
         final Recording caption = Recording.create("caption");
@@ -146,13 +161,9 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         scene.setMotion(0.4f, 0.32f);
         scene.applyPalette();
         content.setUseCompositingLayer(true, null);
-        try {
-            glassShader = new RuntimeShader(Shaders.GLASS_TEXT);
-            glassPaint.setShader(glassShader);
-        } catch (RuntimeException | LinkageError e) {   // Android 9 to 12: no AGSL
-            AppLog.w("glass clock unavailable: " + e.getMessage());
-            glassShader = null;
-        }
+        // The clock is drawn solid (same font), in white or near-black after the photo behind it: the Liquid Glass
+        // version (Shaders.GLASS_TEXT, makeGlass) looked smeared and got cut at its bitmap's edges, so it stays off.
+        glassShader = null;
         black.setColor(0xFF000000);
         shadowPaint.setColor(0xFF000000);
     }
@@ -280,7 +291,9 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         }
         if (last != null && Recs.key(pick).equals(Recs.key(last.pick))) {
             // Only one photo: the same one again, with a different motion.
-            prepared = newSlide(pick, last.image, last.frost, last.lightCaption, last.lightClock);
+            prepared = newSlide(pick, last.image, last.frost, last.lightCaption, last.lightClock, last.darkInk);
+            prepared.captionDark = last.captionDark;   // the same photo: same inks (and its text treatment is baked in)
+            recordCaption(prepared);
             return;
         }
         File file = recs.readyImage(pick);
@@ -295,9 +308,10 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         worker.execute(() -> {
             Bitmap[] images = null;
             float[] light = new float[2];
+            boolean[] dark = new boolean[2];
             try {
                 images = Backdrop.photo(file, PW, PH, light);
-                images[0] = Backdrop.gpu(withScrims(images[0], light[0], light[1]));
+                images[0] = Backdrop.gpu565(prepareText(images[0], light, dark, chosen.title));
             } catch (Exception | OutOfMemoryError e) {
                 AppLog.w("screensaver: photo for “" + chosen.title + "”: " + e.getMessage());
             }
@@ -314,14 +328,17 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
                     prepareNext();
                     return;
                 }
-                prepared = newSlide(chosen, ready[0], ready[1], light[0], light[1]);
+                prepared = newSlide(chosen, ready[0], ready[1], light[0], light[1], dark[0]);
+                prepared.captionDark = dark[1];
+                recordCaption(prepared);
                 invalidate();
             });
         });
     }
 
-    private Slide newSlide(Recs.Pick pick, Bitmap image, Bitmap frost, float lightCaption, float lightClock) {
+    private Slide newSlide(Recs.Pick pick, Bitmap image, Bitmap frost, float lightCaption, float lightClock, boolean darkInk) {
         Slide s = new Slide(pick, image, frost, lightCaption, lightClock, slides++);
+        s.darkInk = darkInk;
         if (w > 0) recordCaption(s);
         return s;
     }
@@ -437,7 +454,10 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
             drawPhoto(canvas, incoming, placeB, e);
         }
 
-        if (chromeDirty) recordChrome();
+        int ink = blendRgb(current.darkInk ? DARK_INK : 0xFFFFFF,
+                incoming == null ? (current.darkInk ? DARK_INK : 0xFFFFFF) : (incoming.darkInk ? DARK_INK : 0xFFFFFF), e);
+        if (ink != inkRecorded) chromeDirty = true;   // crossfading to a photo of the other kind: the text follows
+        if (chromeDirty) recordChrome(ink);
         chrome.setAlpha(first);
         chrome.draw(canvas);
         drawGlass(canvas, first, e);
@@ -454,11 +474,12 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
      * background): each frame draws only the photo (the TV's GPU feels every full-screen layer). With the slow zoom,
      * they move a little along with the photo, which makes no difference to the text.
      */
-    private static Bitmap withScrims(Bitmap photo, float lightCaption, float lightClock) {
+    private static Bitmap withScrims(Bitmap photo, float lightCaption, float lightClock, boolean darkInk, boolean captionDark) {
         int w = photo.getWidth(), h = photo.getHeight();
         Canvas c = new Canvas(photo);
         Paint p = new Paint(Paint.DITHER_FLAG);
-        float caption = scrimStrength(lightCaption, 0.5f), corner = scrimStrength(lightClock, 0.42f);
+        // The dark scrims are only for white text: under near-black text they would fight it.
+        float caption = captionDark ? 0 : scrimStrength(lightCaption, 0.5f), corner = darkInk ? 0 : scrimStrength(lightClock, 0.42f);
         p.setShader(new LinearGradient(0, h, 0, h * 0.42f,
                 new int[] {black(0.55f * caption), black(0.33f * caption), black(0.11f * caption), 0},
                 new float[] {0, 0.35f, 0.7f, 1}, Shader.TileMode.CLAMP));
@@ -471,7 +492,8 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         around.setLocalMatrix(m);
         p.setShader(around);
         c.drawRect(0, h - w * 0.7f * 0.62f, w * 0.7f, h, p);
-        p.setShader(new LinearGradient(0, 0, 0, h * 0.3f, new int[] {black(0.3f), black(0.075f), 0},
+        float top = darkInk ? 0 : 0.3f;   // the top scrim is only for white text
+        p.setShader(new LinearGradient(0, 0, 0, h * 0.3f, new int[] {black(top), black(top / 4), 0},
                 new float[] {0, 0.45f, 1}, Shader.TileMode.CLAMP));
         c.drawRect(0, 0, w, h * 0.3f, p);
         float cx = w * 0.86f, cy = h * 0.15f;
@@ -490,13 +512,189 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         return Math.round(Math.max(0, Math.min(1, a)) * 255) << 24;
     }
 
+    /**
+     * Everything the text needs, baked into the new photo once, in the background (#92, #94): a barely visible blur
+     * behind both text blocks, then each block's ink from the blurred photo as it will be shown there (white or
+     * near-black, whichever contrasts more; no memory of the previous photo), the usual soft scrims for white text,
+     * and an extra soft scrim only where neither ink reaches MIN_CONTRAST. dark[0] = corner, dark[1] = caption.
+     */
+    private static Bitmap prepareText(Bitmap photo, float[] light, boolean[] dark, String title) {
+        int[] a = shown(photo, REGION_A), b = shown(photo, REGION_B);
+        if (BLUR_STRENGTH > 0) {
+            softBlur(photo, a, BLUR_STRENGTH);
+            softBlur(photo, b, BLUR_STRENGTH);
+        }
+        float[] sa = stats(photo, a), sb = stats(photo, b);
+        dark[0] = darkWins(sa);
+        dark[1] = darkWins(sb);
+        withScrims(photo, light[0], light[1], dark[0], dark[1]);
+        float[] fa = fixContrast(photo, a, dark[0]), fb = fixContrast(photo, b, dark[1]);
+        AppLog.w("screensaver: “" + title + "” clock " + (dark[0] ? "dark" : "white") + " " + fmt(fa[0]) + ":1"
+                + (fa[1] > 0 ? " (scrim " + fmt(fa[1]) + ")" : "") + ", caption " + (dark[1] ? "dark" : "white") + " "
+                + fmt(fb[0]) + ":1" + (fb[1] > 0 ? " (scrim " + fmt(fb[1]) + ")" : ""));
+        return photo;
+    }
+
+    private static String fmt(float v) {
+        return String.valueOf(Math.round(v * 10) / 10f);
+    }
+
+    /**
+     * A screen region in the photo's pixels, as it is drawn: the photo spans the screen at a zoom of 1 to 1.1 (1.05 on
+     * average) around the center, the pan moves it a few percent; the block is widened a little to cover that.
+     */
+    private static int[] shown(Bitmap photo, float[] r) {
+        float z = 1.05f, pad = 0.015f;
+        int pw = photo.getWidth(), ph = photo.getHeight();
+        return new int[] {
+                Math.max(0, Math.round(pw * (0.5f + (r[0] - pad - 0.5f) / z))),
+                Math.max(0, Math.round(ph * (0.5f + (r[1] - pad - 0.5f) / z))),
+                Math.min(pw, Math.round(pw * (0.5f + (r[2] + pad - 0.5f) / z))),
+                Math.min(ph, Math.round(ph * (0.5f + (r[3] + pad - 0.5f) / z)))};
+    }
+
+    /** The region's relative luminance (linear, WCAG): {25th percentile, 75th percentile, mean}. */
+    private static float[] stats(Bitmap b, int[] r) {
+        int nx = 48, ny = 24, n = nx * ny;
+        float[] v = new float[n];
+        float sum = 0;
+        for (int j = 0; j < ny; j++) {
+            for (int i = 0; i < nx; i++) {
+                int x = Math.min(r[2] - 1, r[0] + (int) ((r[2] - r[0]) * (i + 0.5f) / nx));
+                int y = Math.min(r[3] - 1, r[1] + (int) ((r[3] - r[1]) * (j + 0.5f) / ny));
+                int p = b.getPixel(x, y);
+                float l = 0.2126f * lin((p >> 16) & 255) + 0.7152f * lin((p >> 8) & 255) + 0.0722f * lin(p & 255);
+                v[j * nx + i] = l;
+                sum += l;
+            }
+        }
+        java.util.Arrays.sort(v);
+        return new float[] {v[n / 4], v[n * 3 / 4], sum / n};
+    }
+
+    private static float lin(int c) {
+        float s = c / 255f;
+        return s <= 0.04045f ? s / 12.92f : (float) Math.pow((s + 0.055f) / 1.055f, 2.4f);
+    }
+
+    /** White text must beat the bright parts of the block (75th pct), dark text the dark parts (25th pct). */
+    private static float whiteContrast(float[] s) { return 1.05f / (s[1] + 0.05f); }
+    private static float darkContrast(float[] s) { return (s[0] + 0.05f) / (DARK_INK_LUM + 0.05f); }
+
+    /**
+     * White is the rule (#95): near-black gets lost on covers. A block goes near-black only behind a really bright
+     * area, after the blur: mean relative luminance above 0.52 (about 75% gray) and white under 3:1 even at its
+     * best spots. Never from the launcher's theme: nothing here reads Tema or the night state.
+     */
+    private static boolean darkWins(float[] s) {
+        return s[2] > 0.52f && whiteContrast(s) < 3f;
+    }
+
+    /** If the block is still under MIN_CONTRAST, a soft feathered scrim just behind it. Returns {ratio, scrim alpha}. */
+    private static float[] fixContrast(Bitmap photo, int[] r, boolean dark) {
+        float[] s = stats(photo, r);
+        float ratio = dark ? darkContrast(s) : whiteContrast(s), total = 0;
+        // A few soft passes, measuring again each time (the feathered edge counts less than the middle).
+        for (int pass = 0; pass < 4 && ratio < MIN_CONTRAST && total < 0.6f; pass++) {
+            float alpha;
+            if (dark) {
+                float need = MIN_CONTRAST * (DARK_INK_LUM + 0.05f) - 0.05f;   // the 25th pct must reach this
+                alpha = (need - s[0]) / Math.max(0.05f, 1 - s[0]);
+            } else {
+                float need = 1.05f / MIN_CONTRAST - 0.05f;                    // the 75th pct must drop to this
+                alpha = 1 - need / Math.max(need, s[1]);
+            }
+            alpha = Math.min(0.6f - total, Math.max(0.06f, alpha * 1.3f));
+            feathered(photo, r, dark ? 0xFFFFFFFF : 0xFF000000, alpha);
+            total += alpha;
+            s = stats(photo, r);
+            ratio = dark ? darkContrast(s) : whiteContrast(s);
+        }
+        return new float[] {ratio, total};
+    }
+
+    /** An ellipse around the block, solid in the middle and fading to nothing well before its edge: no visible box. */
+    private static RadialGradient mask(int[] r, int color) {
+        float cx = (r[0] + r[2]) / 2f, cy = (r[1] + r[3]) / 2f;
+        float rx = (r[2] - r[0]) / 2f * 1.7f, ry = (r[3] - r[1]) / 2f * 1.7f;
+        int clear = color & 0x00FFFFFF;
+        RadialGradient g = new RadialGradient(cx, cy, rx, new int[] {color, color, Ui.alpha(color, 0.45f), clear},
+                new float[] {0, 0.5f, 0.75f, 1}, Shader.TileMode.CLAMP);
+        Matrix m = new Matrix();
+        m.setScale(1, ry / rx, cx, cy);
+        g.setLocalMatrix(m);
+        return g;
+    }
+
+    private static void feathered(Bitmap photo, int[] r, int color, float alpha) {
+        Paint p = new Paint(Paint.DITHER_FLAG);
+        p.setShader(mask(r, color));
+        p.setAlpha(Math.round(255 * alpha));
+        drawAround(new Canvas(photo), photo, r, p);
+    }
+
+    private static void drawAround(Canvas c, Bitmap photo, int[] r, Paint p) {
+        float cx = (r[0] + r[2]) / 2f, cy = (r[1] + r[3]) / 2f;
+        float rx = (r[2] - r[0]) / 2f * 1.7f, ry = (r[3] - r[1]) / 2f * 1.7f;
+        c.drawRect(Math.max(0, cx - rx), Math.max(0, cy - ry), Math.min(photo.getWidth(), cx + rx),
+                Math.min(photo.getHeight(), cy + ry), p);
+    }
+
+    /**
+     * The barely visible blur (#94): the area around the block scaled down BLUR_SCALE times (halving, so it averages)
+     * and back up with filtering, laid over the photo through the same feathered ellipse at a low strength.
+     */
+    private static void softBlur(Bitmap photo, int[] r, float strength) {
+        float cx = (r[0] + r[2]) / 2f, cy = (r[1] + r[3]) / 2f;
+        float rx = (r[2] - r[0]) / 2f * 1.7f, ry = (r[3] - r[1]) / 2f * 1.7f;
+        int x0 = Math.max(0, (int) (cx - rx)), y0 = Math.max(0, (int) (cy - ry));
+        int x1 = Math.min(photo.getWidth(), (int) (cx + rx)), y1 = Math.min(photo.getHeight(), (int) (cy + ry));
+        if (x1 - x0 < 16 || y1 - y0 < 16) return;
+        Bitmap crop = Bitmap.createBitmap(photo, x0, y0, x1 - x0, y1 - y0);
+        Bitmap small = crop;
+        for (float f = 1; f < BLUR_SCALE; f *= 2) {
+            Bitmap half = Bitmap.createScaledBitmap(small, Math.max(1, small.getWidth() / 2), Math.max(1, small.getHeight() / 2), true);
+            if (small != crop) small.recycle();
+            small = half;
+        }
+        Bitmap up = Bitmap.createScaledBitmap(small, crop.getWidth(), crop.getHeight(), true);
+        if (small != crop) small.recycle();
+        if (crop != photo) crop.recycle();
+        BitmapShader bs = new BitmapShader(up, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+        Matrix t = new Matrix();
+        t.setTranslate(x0, y0);
+        bs.setLocalMatrix(t);
+        Paint p = new Paint(Paint.DITHER_FLAG | Paint.FILTER_BITMAP_FLAG);
+        p.setShader(new android.graphics.ComposeShader(bs, mask(r, 0xFF000000), android.graphics.PorterDuff.Mode.DST_IN));
+        p.setAlpha(Math.round(255 * Math.min(1, strength)));
+        drawAround(new Canvas(photo), photo, r, p);
+        up.recycle();
+    }
+
     private static float scrimStrength(float light, float base) {
         return Math.max(base - 0.1f, Math.min(0.78f, base + (light - 0.3f) * 0.9f));
     }
 
     // MARK: - Corner: date and weather, glass clock, prices
 
-    private void recordChrome() {
+    private static int blendRgb(int a, int b, float t) {
+        int r = Math.round(((a >> 16) & 255) + (((b >> 16) & 255) - ((a >> 16) & 255)) * t);
+        int g = Math.round(((a >> 8) & 255) + (((b >> 8) & 255) - ((a >> 8) & 255)) * t);
+        int bl = Math.round((a & 255) + ((b & 255) - (a & 255)) * t);
+        return (r << 16) | (g << 8) | bl;
+    }
+
+    /** The paint's own alpha with the corner ink; the soft shadow only under light ink (it muddies dark text). */
+    private void ink(Paint p, int ink, float whiteness) {
+        p.setColor((p.getColor() & 0xFF000000) | ink);
+        if (whiteness > 0.02f) p.setShadowLayer(18 * k, 0, 2 * k, Math.round(0x66 * whiteness) << 24);
+        else p.clearShadowLayer();
+    }
+
+    private void recordChrome(int inkRgb) {
+        inkRecorded = inkRgb;
+        float whiteness = (inkRgb & 255) / 255f;   // 1 = white ink, ~0.1 = near-black
+        for (Paint p : new Paint[] {cornerDate, cornerQuote, cornerStale, cornerClock}) ink(p, inkRgb, whiteness);
         Canvas c = chrome.beginRecording(w, h);
         try {
             float right = RIGHT * k;
@@ -509,7 +707,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
                 x -= tw + 10 * k;
                 String symbol = Symbols.weather(wx.code, wx.isDay);
                 float size = 30 * k, sw = Symbols.width(getContext(), symbol, size);
-                Symbols.draw(getContext(), c, symbol, x - sw / 2, DATE_BASE * k - Ui.halfCap(cornerDate), size, 0xEBFFFFFF);
+                Symbols.draw(getContext(), c, symbol, x - sw / 2, DATE_BASE * k - Ui.halfCap(cornerDate), size, 0xEB000000 | inkRgb);
                 x -= sw + 26 * k;
             }
             c.drawText(date, x - cornerDate.measureText(date), DATE_BASE * k, cornerDate);
@@ -520,9 +718,12 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
                 shadowPaint.setAlpha(140);
                 c.drawBitmap(g.shadow, g.x, g.y + 6 * k, shadowPaint);
             } else {
-                Rect ink = new Rect();
-                cornerClock.getTextBounds(clock, 0, clock.length(), ink);
-                c.drawText(clock, right - ink.right, CLOCK_TOP * k - ink.top, cornerClock);
+                // Solid digits on the full-screen canvas (nothing to clip them). The baseline comes from the font's cap
+                // height, not this string's ink, so it never jumps between times; right-aligned by the advance widths
+                // (tabular figures), so the colon stays put from 10:08 to 23:59.
+                cornerClock.setTextAlign(Paint.Align.RIGHT);
+                c.drawText(clock, right, CLOCK_TOP * k + Ui.cap(cornerClock), cornerClock);
+                cornerClock.setTextAlign(Paint.Align.LEFT);
             }
 
             // Compact prices under the clock, right-aligned.
@@ -540,7 +741,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
             }
             float qx = right - total;
             for (int i = 0; i < n; i++) {
-                Glyphs.coin(getContext(), c, HomeData.COINS[coins[i]], qx + glyphs[i] / 2, base - cap / 2, cap, 0xA6FFFFFF);
+                Glyphs.coin(getContext(), c, HomeData.COINS[coins[i]], qx + glyphs[i] / 2, base - cap / 2, cap, 0xA6000000 | inkRgb);
                 qx += glyphs[i] + gap;
                 c.drawText(values[i], qx, base, cornerQuote);
                 qx += cornerQuote.measureText(values[i]) + spacing;
@@ -671,6 +872,11 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
     // MARK: - Photo caption (bottom left)
 
     private void recordCaption(Slide s) {
+        if (w == 0 || labelPaint == null) return;
+        // One ink for the whole block (label, title, details), from this slide's own photo (#92).
+        int inkRgb = s.captionDark ? DARK_INK : 0xFFFFFF;
+        float whiteness = s.captionDark ? 0 : 1;
+        for (Paint p : new Paint[] {labelPaint, titlePaint, metaPaint}) ink(p, inkRgb, whiteness);
         Canvas c = s.caption.beginRecording(w, h);
         try {
             float x = MARGIN * k, metaBase = META_BASE * k, titleBase = metaBase - 58 * k;
@@ -757,6 +963,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
             String range = Ui.ru ? "Макс. " + HomeData.degrees(wx.max) + "  Мин. " + HomeData.degrees(wx.min)
                     : Ui.en ? "H:" + HomeData.degrees(wx.max) + "  L:" + HomeData.degrees(wx.min)
                     : Ui.de ? "H:" + HomeData.degrees(wx.max) + "  T:" + HomeData.degrees(wx.min)
+                    : Ui.it ? "Max " + HomeData.degrees(wx.max) + "  Min " + HomeData.degrees(wx.min)
                     : "Máx. " + HomeData.degrees(wx.max) + "  Mín. " + HomeData.degrees(wx.min);
             float sw = Symbols.width(getContext(), symbol, 32 * k);
             float width = sw + 12 * k + weatherPaint.measureText(now) + 18 * k + weatherDim.measureText(range);

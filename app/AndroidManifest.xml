@@ -6,7 +6,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- After the TV boots (and after a TV update), checks that Free My TV mode is still as you left it. -->
+    <!-- After the TV boots (and after a TV update), checks that Launcher mode is still as you left it. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Android 11+: without this list the app can't "see" the other apps (getLeanbackLaunchIntentForPackage
@@ -26,10 +26,39 @@
         <package android:name="com.peacocktv.peacockandroid" />
         <package android:name="com.globo.globotv" />
         <package android:name="com.spotify.tv.android" />
+        <package android:name="com.google.android.youtube.tvmusic" />
+        <package android:name="com.amazon.music.tv" />
+        <package android:name="com.amazon.mp3" />
+        <package android:name="deezer.android.tv" />
+        <package android:name="deezer.android.app" />
+        <package android:name="com.apple.android.music" />
+        <package android:name="com.aspiro.tidal" />
+        <package android:name="com.soundcloud.android" />
+        <package android:name="com.qobuz.music" />
+        <intent>
+            <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+        </intent>
         <package android:name="com.tcl.tv" />
         <package android:name="com.google.android.tv" />
         <package android:name="com.mediatek.wwtv.tvcenter" />
         <package android:name="com.sony.dtv.tvx" />
+        <!-- StoreApps: suggested apps (shown only when not installed) -->
+        <package android:name="com.nowtv.it" />
+        <package android:name="com.dazn" />
+        <package android:name="it.rainet.androidtv" />
+        <package android:name="it.mediaset.infinitytv" />
+        <package android:name="tv.pluto.android" />
+        <package android:name="tv.wuaki.apptv" />
+        <package android:name="com.mubi" />
+        <package android:name="com.plexapp.android" />
+        <package android:name="org.jellyfin.androidtv" />
+        <package android:name="org.videolan.vlc" />
+        <package android:name="com.nvidia.geforcenow" />
+        <package android:name="com.valvesoftware.steamlink" />
+        <package android:name="com.ionitech.airscreen" />
+        <package android:name="com.yablio.sendfilestotv" />
+        <package android:name="com.lonelycatgames.Xplore" />
+        <package android:name="com.cloudmosa.puffinTV" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
@@ -49,18 +78,18 @@
 
     <application
         android:name=".App"
-        android:label="Free My TV"
+        android:label="Launcher"
         android:icon="@drawable/icon"
         android:banner="@drawable/banner"
         android:allowBackup="false"
         android:usesCleartextTraffic="false">
 
-        <!-- The app's icon opens the settings (switch between Free My TV and the original home screen). -->
+        <!-- The app's icon opens the settings (switch between Launcher and the original home screen). -->
         <activity
             android:name=".SettingsActivity"
             android:process=":home"
             android:exported="true"
-            android:label="Free My TV"
+            android:label="Launcher"
             android:launchMode="singleTask"
             android:taskAffinity="io.freemytv.settings"
             android:excludeFromRecents="true"
@@ -75,12 +104,12 @@
         </activity>
 
         <!-- The home screen. Its own process (:home): if it ever crashes, the safety net in the main process still
-             works. It only becomes the TV's home screen in Free My TV mode (cmd package set-home-activity). -->
+             works. It only becomes the TV's home screen in Launcher mode (cmd package set-home-activity). -->
         <activity
             android:name=".HomeActivity"
             android:process=":home"
             android:exported="true"
-            android:label="Free My TV"
+            android:label="Launcher"
             android:launchMode="singleTask"
             android:taskAffinity=""
             android:stateNotNeeded="true"
@@ -102,7 +131,7 @@
             android:process=":home"
             android:enabled="@bool/dream_in_home"
             android:exported="true"
-            android:label="Free My TV"
+            android:label="Launcher"
             android:permission="android.permission.BIND_DREAM_SERVICE">
             <intent-filter>
                 <action android:name="android.service.dreams.DreamService" />
@@ -115,7 +144,7 @@
             android:name=".ScreensaverAlone"
             android:enabled="@bool/dream_alone"
             android:exported="true"
-            android:label="Free My TV"
+            android:label="Launcher"
             android:permission="android.permission.BIND_DREAM_SERVICE">
             <intent-filter>
                 <action android:name="android.service.dreams.DreamService" />
@@ -135,7 +164,7 @@
             android:name=".RemoteKeyService"
             android:process=":keys"
             android:exported="true"
-            android:label="Free My TV"
+            android:label="Launcher"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

@@ -270,7 +270,7 @@ final class HomeData {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(6000);
         c.setReadTimeout(6000);
-        c.setRequestProperty("User-Agent", "FreeMyTV");
+        c.setRequestProperty("User-Agent", "Launcher");
         try {
             if (c.getResponseCode() != 200) throw new IOException("HTTP " + c.getResponseCode());
             try (InputStream in = c.getInputStream()) {
@@ -289,14 +289,9 @@ final class HomeData {
      * Night at your location: from sunset to sunrise (like Apple's "Automatic" appearance: the light design darkens).
      * Uses the last weather fetched (it moves ~1 min a day); without data, 6:00 and 18:00.
      */
+    /** Always dark (#96): the launcher has a single, dark look; the screensaver never asks. */
     boolean isNight(long now) {
-        String theme = Prefs.theme();
-        if (theme.equals("dark")) return true;
-        if (theme.equals("light")) return false;
-        long t = Shaders.timeOfDay(now, 0);
-        long rise = Shaders.timeOfDay(weather.sunrise, 6 * 60 * 60_000L);
-        long set = Shaders.timeOfDay(weather.sunset, 18 * 60 * 60_000L);
-        return t < rise || t >= set;
+        return true;
     }
 
     // MARK: - Formatting
@@ -381,6 +376,18 @@ final class HomeData {
             if (code >= 95) return "Gewitter";
             return "Regen";
         }
+        if (Ui.it) {
+            if (code == 0) return day ? "Sereno" : "Notte serena";
+            if (code == 1) return "Poco nuvoloso";
+            if (code == 2) return "Parzialmente nuvoloso";
+            if (code == 3) return "Nuvoloso";
+            if (code == 45 || code == 48) return "Nebbia";
+            if (code >= 51 && code <= 57) return "Pioviggine";
+            if (code == 65 || code == 67 || code == 82) return "Pioggia forte";
+            if (code >= 71 && code <= 77 || code == 85 || code == 86) return "Neve";
+            if (code >= 95) return "Temporale";
+            return "Pioggia";
+        }
         if (code == 0) return day ? "Céu limpo" : "Noite limpa";
         if (code == 1) return "Poucas nuvens";
         if (code == 2) return "Parcialmente nublado";
@@ -425,7 +432,7 @@ final class HomeData {
 
     static String hour(long at) {
         return Ui.once("hour", at, () -> Ui.en ? new SimpleDateFormat("h a", Locale.US).format(new java.util.Date(at))
-                : new SimpleDateFormat(Ui.es || Ui.ru ? "HH:mm" : Ui.de ? "HH 'Uhr'" : "HH'h'", Ui.locale()).format(new java.util.Date(at)));
+                : new SimpleDateFormat(Ui.es || Ui.ru || Ui.it ? "HH:mm" : Ui.de ? "HH 'Uhr'" : "HH'h'", Ui.locale()).format(new java.util.Date(at)));
     }
 
     /** How long ago the data was fetched, if it's stale (no internet): "12 min ago". */
@@ -437,6 +444,7 @@ final class HomeData {
         if (Ui.en) return minutes < 60 ? minutes + " min ago" : (minutes / 60) + " h ago";
         if (Ui.ru) return minutes < 60 ? minutes + " мин назад" : (minutes / 60) + " ч назад";
         if (Ui.es) return minutes < 60 ? "hace " + minutes + " min" : "hace " + (minutes / 60) + " h";
+        if (Ui.it) return minutes < 60 ? minutes + " min fa" : (minutes / 60) + " h fa";
         if (Ui.de) return minutes < 60 ? "vor " + minutes + " Min." : "vor " + (minutes / 60) + " Std.";
         return minutes < 60 ? "há " + minutes + " min" : "há " + (minutes / 60) + " h";
     }

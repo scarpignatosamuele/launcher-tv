@@ -54,7 +54,7 @@ import java.util.regex.Pattern;
 final class HomeApps {
     private HomeApps() {}
 
-    static final int APP = 0, LIVE_TV = 1, INPUT = 2, ALL_APPS = 3, SETTINGS = 4, ANDROID_SETTINGS = 5;
+    static final int APP = 0, LIVE_TV = 1, INPUT = 2, ALL_APPS = 3, SETTINGS = 4, ANDROID_SETTINGS = 5, LINK = 6;
     /** The "HDMI Inputs" button: opens the bottom drawer on the inputs (the home screen handles it). */
     static final int INPUTS = 7;
     /** Image size of each card (16:9; on screen it shows up to ~330 px wide). */
@@ -62,7 +62,7 @@ final class HomeApps {
 
     static final class Item {
         int kind;
-        String key, label, pkg, inputId, number;
+        String key, label, pkg, inputId, number, uri;
         String symbol;      // icon for the shortcuts and special cards
         Bitmap tile;        // 16:9 card (apps and specials)
         Bitmap logo;        // colored logo with no background (shelf); null = use the card
@@ -81,6 +81,7 @@ final class HomeApps {
     private static final String[][] SHELF = {
         {"netflix", "Netflix", "com.netflix.ninja", "E50914", "", "1"},
         {"youtube", "YouTube", "com.google.android.youtube.tv", "FF0033", "play", "1"},
+        {"ytmusic", "YouTube Music", "com.google.android.youtube.tvmusic", "FF0033", "play", "1"},
         {"prime", "Prime Video", "com.amazon.amazonvideo.livingroom", "1A98FF", "tint", "0.96"},
         {"disney", "Disney+", "com.disney.disneyplus", "1838C8", "", "1"},
         {"max", "Max", "com.wbd.stream", "6C3BE0", "", "1.32"},
@@ -161,6 +162,15 @@ final class HomeApps {
     /** The shelf's packages in order: the user's list (Settings > Shelf), or the built-in one. */
     static List<String> shelfPackages(Context c) {
         List<String> custom = Prefs.shelf();
+        if (custom != null && !Prefs.sp().getBoolean("ytmShelf2", false) && launchIntent(c.getPackageManager(), Music.YTM) != null) {
+            // Once (as soon as YouTube Music can be opened): it joins a dock the user already arranged, after YouTube.
+            Prefs.sp().edit().putBoolean("ytmShelf2", true).apply();
+            if (!custom.contains(Music.YTM)) {
+                int at = custom.indexOf(Music.YOUTUBE);
+                custom.add(at >= 0 ? at + 1 : Math.min(custom.size(), 1), Music.YTM);
+                Prefs.setShelf(custom);
+            }
+        }
         if (custom != null) return custom;
         List<String> out = new ArrayList<>();
         PackageManager pm = c.getPackageManager();
@@ -209,7 +219,7 @@ final class HomeApps {
         return shortcut(kind, key, label, symbol);
     }
 
-    /** Free My TV settings, in the corner of the home screen. */
+    /** Launcher settings, in the corner of the home screen. */
     static Item settings() {
         return shortcut(SETTINGS, "settings", Ui.tr("Ajustes", "Settings"), "settings");
     }
@@ -224,6 +234,17 @@ final class HomeApps {
     }
 
     /** A streaming service's app (the "Watch" button of the featured pick). */
+    /** A YouTube video or Twitch stream, opened in its app (or whatever handles the link). */
+    static Item link(String uri, String pkg, String label) {
+        Item it = new Item();
+        it.kind = LINK;
+        it.key = uri;
+        it.uri = uri;
+        it.pkg = pkg;
+        it.label = label;
+        return it;
+    }
+
     static Item app(String pkg, String label) {
         Item it = new Item();
         it.kind = APP;
@@ -349,7 +370,7 @@ final class HomeApps {
         synchronized (HomeApps.class) {
             TILES.keySet().removeIf(k -> k.contains(".") && !seen.contains(k));
         }
-        items.add(special(c, SETTINGS, "freemytv-settings", "Free My TV", "sparkles"));
+        items.add(special(c, SETTINGS, "freemytv-settings", "Launcher", "sparkles"));
         return items;
     }
 
@@ -379,6 +400,27 @@ final class HomeApps {
             case ANDROID_SETTINGS:
                 intent = new Intent(Settings.ACTION_SETTINGS);
                 break;
+            case LINK:
+                if (it.uri != null && (it.uri.startsWith("ytmwatch:") || it.uri.startsWith("ytmlist:"))) {
+                    // A song (and the playlist it's in) or a playlist of the user's: straight to it in YouTube Music.
+                    intent = ytmLink(a, it.uri);
+                    break;
+                }
+                if (it.uri != null && it.uri.startsWith("playsearch:") && Music.YTM.equals(it.pkg)) {
+                    // A chart song for YouTube Music: found on YouTube (one search), then played like a liked song.
+                    Music.get(a).playSearch(a, it.uri.substring("playsearch:".length()));
+                    return true;
+                }
+                if (it.uri != null && it.uri.startsWith("playsearch:")) {   // a song from the charts: played by that app
+                    intent = new Intent(android.provider.MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH);
+                    intent.putExtra(android.app.SearchManager.QUERY, it.uri.substring("playsearch:".length()));
+                    intent.setPackage(it.pkg);
+                    if (a.getPackageManager().resolveActivity(intent, 0) == null) intent = launchIntent(a.getPackageManager(), it.pkg);
+                    break;
+                }
+                intent = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(it.uri));
+                if (it.pkg != null) intent.setPackage(it.pkg);
+                break;
             default:
                 return false;
         }
@@ -388,6 +430,14 @@ final class HomeApps {
             a.startActivity(intent, ActivityOptions.makeScaleUpAnimation(from, x, y, Math.max(w, 1), Math.max(h, 1)).toBundle());
             return true;
         } catch (ActivityNotFoundException | SecurityException e) {
+            if (it.kind == LINK && it.uri != null && it.uri.startsWith("twitch://")) {   // the app took no deep link: the web address
+                Item web = link("https://www.twitch.tv/" + it.uri.substring(it.uri.lastIndexOf('/') + 1), null, it.label);
+                return open(a, web, from, x, y, w, h);
+            }
+            if (it.kind == LINK && it.uri != null && it.uri.startsWith("market://")) {   // no Play Store app: its web page
+                Item web = link("https://play.google.com/store/apps/" + it.uri.substring("market://".length()), null, it.label);
+                return open(a, web, from, x, y, w, h);
+            }
             AppLog.w("couldn't open " + it.label + ": " + e.getMessage());
             return false;
         }
@@ -462,7 +512,29 @@ final class HomeApps {
         return out;
     }
 
+    /**
+     * "ytmwatch:<video>|<list>" or "ytmlist:<list>": the song (in its playlist) or the playlist itself. Tested on the
+     * Chromecast (#98): YouTube Music TV ignores music.youtube.com links (it opens on its home, also by explicit
+     * component), while the YouTube TV app, which hosts YouTube Music's player, plays a youtube.com/watch link at once.
+     */
+    static Intent ytmLink(Context c, String uri) {
+        String url;
+        if (uri.startsWith("ytmlist:")) {
+            url = "https://www.youtube.com/playlist?list=" + uri.substring("ytmlist:".length());
+        } else {
+            String[] v = uri.substring("ytmwatch:".length()).split("\\|");
+            url = "https://www.youtube.com/watch?v=" + v[0] + (v.length > 1 && !v[1].isEmpty() ? "&list=" + v[1] : "");
+        }
+        Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).setPackage(Music.YOUTUBE);
+        if (c.getPackageManager().resolveActivity(i, 0) != null) return i;
+        return launchIntent(c.getPackageManager(), Music.YTM);
+    }
+
     static Intent launchIntent(PackageManager pm, String pkg) {
+        if (Music.YTM.equals(pkg)) {   // YouTube Music by its own activity (its leanback entry can land in YouTube)
+            Intent ytm = Music.ytmIntent();
+            if (pm.resolveActivity(ytm, 0) != null) return ytm;
+        }
         Intent intent = pm.getLeanbackLaunchIntentForPackage(pkg);
         return intent != null ? intent : pm.getLaunchIntentForPackage(pkg);
     }

@@ -63,8 +63,8 @@ final class German {
             case "Switching the home screen and screensaver…": return "Startbildschirm und Bildschirmschoner werden gewechselt…";
             case "Android didn't accept the new home screen": return "Android hat den neuen Startbildschirm nicht angenommen";
             case "Turning off apps (": return "Apps werden ausgeschaltet (";
-            case "Measuring Free My TV…": return "Free My TV wird gemessen…";
-            case "Couldn't turn on Free My TV: ": return "Free My TV ließ sich nicht einschalten: ";
+            case "Measuring Launcher…": return "Launcher wird gemessen…";
+            case "Couldn't turn on Launcher: ": return "Launcher ließ sich nicht einschalten: ";
             case "Turning the apps back on…": return "Die Apps werden wieder eingeschaltet…";
             case "Turning apps back on (": return "Apps werden wieder eingeschaltet (";
             case "Restoring the original home screen…": return "Der ursprüngliche Startbildschirm wird wiederhergestellt…";
@@ -72,16 +72,16 @@ final class German {
             case "the original home screen": return "den ursprünglichen Startbildschirm";
             case "Original mode, but I couldn't turn back on: ": return "Originalmodus, aber das ließ sich nicht wieder einschalten: ";
             case "Couldn't go back to the original: ": return "Zurück zum Original ging nicht: ";
-            case "Free My TV's home screen crashed 3 times in a row; I switched back to the original one.": return "Der Startbildschirm von Free My TV ist 3-mal hintereinander abgestürzt; der ursprüngliche ist wieder aktiv.";
+            case "Launcher's home screen crashed 3 times in a row; I switched back to the original one.": return "Der Startbildschirm von Launcher ist 3-mal hintereinander abgestürzt; der ursprüngliche ist wieder aktiv.";
             case "the home screen": return "den Startbildschirm";
             case "the screensaver": return "den Bildschirmschoner";
-            case "Couldn't check Free My TV: ": return "Free My TV ließ sich nicht prüfen: ";
+            case "Couldn't check Launcher: ": return "Launcher ließ sich nicht prüfen: ";
             case "The TV update turned back on ": return "Das TV-Update hat wieder eingeschaltet: ";
             case "Turned off what was missing: ": return "Ausgeschaltet, was noch fehlte: ";
-            case "The TV was updated; Free My TV is still on.": return "Der Fernseher wurde aktualisiert; Free My TV ist weiter aktiv.";
+            case "The TV was updated; Launcher is still on.": return "Der Fernseher wurde aktualisiert; Launcher ist weiter aktiv.";
             case "Connecting…": return "Verbindung wird hergestellt…";
             case "Accept “Allow USB debugging?” on the TV (tick “Always allow”).": return "Am Fernseher „USB-Debugging zulassen?“ bestätigen („Immer zulassen“ ankreuzen).";
-            case "Free My TV's home screen ran into a problem.\nGoing back to the TV's original home screen…": return "Der Startbildschirm von Free My TV hatte ein Problem.\nZurück zum ursprünglichen Startbildschirm…";
+            case "Launcher's home screen ran into a problem.\nGoing back to the TV's original home screen…": return "Der Startbildschirm von Launcher hatte ein Problem.\nZurück zum ursprünglichen Startbildschirm…";
             case "the TV's first setup saved the Wi-Fi, and turning it off would erase those networks. "
                     + "In Settings → Network & Internet, forget the network and connect again (networks out of range don't "
                     + "show there: Claude Code can remove them from your computer), then try once more.":
@@ -137,9 +137,9 @@ final class German {
             case "Netflix, YouTube and Prime Video: the TV itself controls those buttons.": return "Netflix, YouTube und Prime Video: Diese Tasten steuert der Fernseher selbst.";
             case "These are the TCL remote's buttons: on this TV, the buttons work as they always did.": return "Das sind die Tasten der TCL-Fernbedienung: Auf diesem Fernseher funktionieren sie wie immer.";
             default:
-                if (english.startsWith("Free My TV is on: new home screen and screensaver, ")) {
-                    return "Free My TV ist an: neuer Startbildschirm und Bildschirmschoner, "
-                            + english.substring("Free My TV is on: new home screen and screensaver, ".length()).replace(" apps turned off.", " Apps ausgeschaltet.");
+                if (english.startsWith("Launcher is on: new home screen and screensaver, ")) {
+                    return "Launcher ist an: neuer Startbildschirm und Bildschirmschoner, "
+                            + english.substring("Launcher is on: new home screen and screensaver, ".length()).replace(" apps turned off.", " Apps ausgeschaltet.");
                 }
                 if (english.startsWith("On · ")) {
                     return "An · " + english.substring(5).replace(" titles from the TV's apps, 3 new ones every hour.",

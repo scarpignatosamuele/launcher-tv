@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Settings changed on the TV itself (Free My TV > Settings). config.properties only gives the first
+ * Settings changed on the TV itself (Launcher > Settings). config.properties only gives the first
  * values; anything the user changes here wins. Read from the :home process (home screen, screensaver, settings).
  */
 final class Prefs {
@@ -48,7 +48,7 @@ final class Prefs {
         Ui.applyLanguage();   // the language picked on the TV, now that it can be read
     }
 
-    private static SharedPreferences sp() {
+    static SharedPreferences sp() {
         return app.getSharedPreferences("settings", Context.MODE_PRIVATE);
     }
 
@@ -64,11 +64,19 @@ final class Prefs {
 
     // MARK: - Language and units
 
-    /** "auto", "pt", "en", "es", "de" or "ru". */
+    /** "auto", "pt", "en", "es", "de", "it" or "ru". */
     static String language() {
-        String v = app == null ? Config.LANGUAGE : sp().getString("language", Config.LANGUAGE);
+        String v = Config.LANGUAGE;
+        if (app != null) {
+            // A new language in config.properties wins over one saved before it (once; the TV's settings rule after).
+            if (!Config.LANGUAGE.equals(sp().getString("configLanguage", null))) {
+                sp().edit().putString("configLanguage", Config.LANGUAGE).putString("language", Config.LANGUAGE).apply();
+            }
+            v = sp().getString("language", Config.LANGUAGE);
+            if (v.trim().equalsIgnoreCase("auto") && !Config.LANGUAGE.trim().equalsIgnoreCase("auto")) v = Config.LANGUAGE;
+        }
         v = v.trim().toLowerCase(Locale.ROOT);
-        return v.startsWith("ru") ? "ru" : v.startsWith("pt") ? "pt" : v.startsWith("es") ? "es" : v.startsWith("de") ? "de"
+        return v.startsWith("ru") ? "ru" : v.startsWith("pt") ? "pt" : v.startsWith("es") ? "es" : v.startsWith("de") ? "de" : v.startsWith("it") ? "it"
                 : v.startsWith("en") ? "en" : "auto";
     }
 
@@ -82,13 +90,21 @@ final class Prefs {
 
     static void setTemperature(String v) { put("temperature", v); }
 
-    /** "auto" (dark from sunset to sunrise), "light" or "dark". */
+    /** "auto" (dark from sunset to sunrise), "light", "dark" or "scheduled" (dark between two times of day, #89). */
+    /** Dark only (#96): the light theme and its schedule are gone; a saved choice is ignored. */
     static String theme() {
-        String v = sp().getString("theme", "auto");
-        return v.equals("light") || v.equals("dark") ? v : "auto";
+        return "dark";
     }
 
     static void setTheme(String v) { put("theme", v); }
+
+    /** "Scheduled": dark from this minute of the day (default 20:00)... */
+    static int darkFrom() { return sp().getInt("darkFrom", 20 * 60); }
+    static void setDarkFrom(int minute) { sp().edit().putInt("darkFrom", minute).apply(); version++; }
+
+    /** ...light again from this one (default 07:00). */
+    static int lightFrom() { return sp().getInt("lightFrom", 7 * 60); }
+    static void setLightFrom(int minute) { sp().edit().putInt("lightFrom", minute).apply(); version++; }
 
     // MARK: - City
 
@@ -103,6 +119,22 @@ final class Prefs {
 
     /** The home screen's soft click when moving and opening. */
     static boolean sounds() { return sp().getBoolean("sounds", true); }
+
+    /**
+     * Glass effect (#98), Apple-style "Transparency": 0 Opaque … 3 Standard (default) … 5 Maximum. Cached: the glass
+     * reads it on every draw.
+     */
+    static final int GLASS_LEVELS = 6, GLASS_DEFAULT = 3;
+    private static int glass = -1;
+    static int glass() {
+        if (glass < 0) glass = Math.max(0, Math.min(GLASS_LEVELS - 1, sp().getInt("glass", GLASS_DEFAULT)));
+        return glass;
+    }
+    static void setGlass(int level) {
+        glass = Math.max(0, Math.min(GLASS_LEVELS - 1, level));
+        sp().edit().putInt("glass", glass).apply();
+        version++;
+    }
     static void setSounds(boolean on) { put("sounds", on); }
 
     // MARK: - Widgets and coins
@@ -110,7 +142,8 @@ final class Prefs {
     static boolean weather() { return sp().getBoolean("weather", true); }
     static void setWeather(boolean on) { put("weather", on); }
 
-    static boolean quotes() { return sp().getBoolean("quotes", Config.SHOW_CRYPTO); }
+    /** Crypto quotes: removed from the settings (#90) and off everywhere (home drawer, screensaver, price fetches). */
+    static boolean quotes() { return false; }
     static void setQuotes(boolean on) { put("quotes", on); }
 
     static boolean coin(int i) { return sp().getBoolean("coin" + i, true); }

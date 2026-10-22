@@ -32,7 +32,7 @@ final class Ui {
     /** English, Portuguese, Spanish, German or Russian, from the settings or, with "auto", the TV's own language. */
     static volatile String language = language();
     static volatile boolean en = "en".equals(language), es = "es".equals(language), de = "de".equals(language),
-            ru = "ru".equals(language);
+            it = "it".equals(language), ru = "ru".equals(language);
     static Typeface thin, light, displayMedium, displaySemibold, regular, medium, semibold;
     private static boolean loaded;
     private static final Rect BOUNDS = new Rect();
@@ -71,7 +71,7 @@ final class Ui {
         String lang = Prefs.language();
         if (!lang.equals("auto")) return lang;
         lang = Locale.getDefault().getLanguage();
-        return "pt".equals(lang) || "es".equals(lang) || "de".equals(lang) || "ru".equals(lang) ? lang : "en";
+        return "pt".equals(lang) || "es".equals(lang) || "de".equals(lang) || "it".equals(lang) || "ru".equals(lang) ? lang : "en";
     }
 
     /** After the language changes in the settings (and once Prefs can read them). */
@@ -80,6 +80,7 @@ final class Ui {
         en = "en".equals(language);
         es = "es".equals(language);
         de = "de".equals(language);
+        it = "it".equals(language);
         ru = "ru".equals(language);
     }
 
@@ -138,16 +139,16 @@ final class Ui {
     }
 
     static String tr(String pt, String english) {
-        return de ? German.text(english) : ru ? Russian.text(english) : es ? Spanish.text(english) : en ? english : pt;
+        return de ? German.text(english) : it ? Italian.text(english) : ru ? Russian.text(english) : es ? Spanish.text(english) : en ? english : pt;
     }
 
     /** German comes from German.java here too (keyed by the English, with patterns for text built at runtime). */
     static String tr(String pt, String english, String spanish) {
-        return de ? German.text(english) : ru ? Russian.text(english) : es ? spanish : en ? english : pt;
+        return de ? German.text(english) : it ? Italian.text(english) : ru ? Russian.text(english) : es ? spanish : en ? english : pt;
     }
 
     static Locale locale() {
-        return ru ? RU : es ? spanish() : de ? german() : en ? Locale.US : PT;
+        return ru ? RU : es ? spanish() : de ? german() : it ? Locale.ITALY : en ? Locale.US : PT;
     }
 
     /** The TV's own Spanish (es-MX, es-AR…) when it is in Spanish, Spain's otherwise. */
@@ -197,7 +198,7 @@ final class Ui {
     static String date(long now) {
         return ru ? new SimpleDateFormat("EEEE, d MMMM", locale()).format(new Date(now))
                 : en ? new SimpleDateFormat("EEEE, MMMM d", Locale.US).format(new Date(now))
-                : new SimpleDateFormat(de ? "EEEE, d. MMMM" : "EEEE, d 'de' MMMM", locale()).format(new Date(now));
+                : new SimpleDateFormat(de ? "EEEE, d. MMMM" : it ? "EEEE d MMMM" : "EEEE, d 'de' MMMM", locale()).format(new Date(now));
     }
 
     /** Spinning arc (work in progress). */

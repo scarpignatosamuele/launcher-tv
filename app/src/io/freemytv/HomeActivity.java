@@ -10,7 +10,7 @@ import android.view.KeyEvent;
 import android.widget.TextView;
 
 /**
- * The Free My TV home screen (Android's "Home" role in Free My TV mode). It runs in the :home process: if it crashes,
+ * The Launcher home screen (Android's "Home" role in Launcher mode). It runs in the :home process: if it crashes,
  * the safety net in the main process keeps working. On the 3rd crash within 5 min, the Watchdog gives the home screen
  * back to the TV's original one.
  */
@@ -25,8 +25,8 @@ public class HomeActivity extends Activity {
             // Don't try to draw again: only show a notice while the main process restores the original home screen.
             HomeMode.requestRevertHome(this);
             TextView t = new TextView(this);
-            t.setText(Ui.tr("O Início do Free My TV teve um problema.\nVoltando para o Início original da TV…",
-                    "Free My TV's home screen ran into a problem.\nGoing back to the TV's original home screen…"));
+            t.setText(Ui.tr("O Início do Launcher teve um problema.\nVoltando para o Início original da TV…",
+                    "Launcher's home screen ran into a problem.\nGoing back to the TV's original home screen…"));
             t.setTextColor(Color.WHITE);
             t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
             t.setGravity(Gravity.CENTER);
@@ -69,7 +69,11 @@ public class HomeActivity extends Activity {
 
     @Override public void onTrimMemory(int level) {
         super.onTrimMemory(level);
+        // In the background (#98): another app needs the memory more. Half the image cache when the home screen is
+        // hidden, only Explore's cards when the system starts reclaiming, as before when it's critical.
         if (level >= TRIM_MEMORY_COMPLETE) Recs.get(this).trim();
+        else if (level >= TRIM_MEMORY_BACKGROUND) Recs.get(this).shrink(0.25f);
+        else if (level >= TRIM_MEMORY_UI_HIDDEN) Recs.get(this).shrink(0.5f);
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {

@@ -44,7 +44,8 @@ final class Recs {
         int id;
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
-        boolean detailed;
+        String url;             // YouTube / Twitch: what OK opens
+        boolean detailed, live;
     }
 
     interface Listener { void onRecs(); }
@@ -63,6 +64,7 @@ final class Recs {
     static final String[] PERIOD_LABEL_EN = {"THIS MORNING", "THIS AFTERNOON", "TONIGHT"};
     static final String[] PERIOD_LABEL_ES = {"PARA ESTA MAÑANA", "PARA ESTA TARDE", "PARA ESTA NOCHE"};
     static final String[] PERIOD_LABEL_DE = {"HEUTE MORGEN", "HEUTE NACHMITTAG", "HEUTE ABEND"};
+    static final String[] PERIOD_LABEL_IT = {"PER STAMATTINA", "PER QUESTO POMERIGGIO", "PER STASERA"};
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
     private static final String[][] SERVICES = {
         {"netflix", "netflix", "com.netflix.ninja"},
@@ -104,8 +106,86 @@ final class Recs {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Listener> listeners = new ArrayList<>();
-    private final Map<String, Backdrop> images = new LinkedHashMap<>();   // this hour's, built and ready to draw
+    // Ready images, least recently drawn first (access order). Light design: ~1.3 MB of heap each (the card itself is a
+    // HARDWARE bitmap on the GPU), so 48 hold the first cards of every tab and every dock app with room to spare.
+    private final Map<String, Backdrop> images = new LinkedHashMap<>(64, 0.75f, true);
+    private static final int IMAGES_LIGHT = 48, IMAGES_DARK = 4;
+    /**
+     * The cache by size, not count (#98): ~1.2 MB per image now (565 card on the GPU, packed glass), so 44 MB keeps
+     * the first cards of every tab and dock app (what prefetch asks for) with room for the deck you're scrolling.
+     */
+    static final int BUDGET = 44 << 20;
+    private long cachedBytes;
+
+    /** Drops the least recently drawn images until the cache fits (count and bytes). Call with `images` locked. */
+    private void evict(boolean forLight) {
+        int max = forLight ? IMAGES_LIGHT : IMAGES_DARK;
+        long total = 0;
+        for (Backdrop b : images.values()) total += b.bytes();
+        java.util.Iterator<Map.Entry<String, Backdrop>> it = images.entrySet().iterator();
+        while (it.hasNext() && (images.size() > max || total > BUDGET) && images.size() > 1) {
+            Backdrop gone = it.next().getValue();
+            total -= gone.bytes();
+            it.remove();
+        }
+        cachedBytes = total;
+    }
+
+    /** In the background (another app on screen): keep at most `fraction` of the budget, the most recent first. */
+    void shrink(float fraction) {
+        synchronized (images) {
+            long total = 0;
+            for (Backdrop b : images.values()) total += b.bytes();
+            java.util.Iterator<Map.Entry<String, Backdrop>> it = images.entrySet().iterator();
+            while (it.hasNext() && total > BUDGET * fraction) {
+                total -= it.next().getValue().bytes();
+                it.remove();
+            }
+            cachedBytes = total;
+        }
+        AppLog.w("images: trimmed to " + (cachedBytes >> 20) + " MB");
+    }
     private final java.util.Set<String> pending = new java.util.HashSet<>();
+    /**
+     * Image builds: 3 threads (the Chromecast has 4 cores), visible cards first. A card on screen asks with
+     * backdrop() (high priority, newest first); prefetch() queues the rest behind it. A queued prefetch that comes on
+     * screen is moved up.
+     */
+    private final java.util.concurrent.ThreadPoolExecutor imageIo = new java.util.concurrent.ThreadPoolExecutor(3, 3,
+            30, java.util.concurrent.TimeUnit.SECONDS, new java.util.concurrent.PriorityBlockingQueue<>(), r -> {
+                // Background priority: decoding and building never compete with the UI and render threads (#91).
+                Thread t = new Thread(() -> {
+                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                    r.run();
+                }, "recs-image");
+                t.setDaemon(true);
+                return t;
+            });
+    private final Map<String, ImageTask> queued = new HashMap<>();
+    private long taskSeq;
+
+    private final class ImageTask implements Runnable, Comparable<ImageTask> {
+        final Pick pick;
+        final String key;
+        volatile boolean high;
+        volatile long seq;
+
+        ImageTask(Pick p, boolean high) { pick = p; key = p.backdrop; this.high = high; }
+
+        @Override public int compareTo(ImageTask o) {
+            if (high != o.high) return high ? -1 : 1;
+            return high ? Long.compare(o.seq, seq) : Long.compare(seq, o.seq);   // visible: newest first; prefetch: in order
+        }
+
+        @Override public void run() {
+            synchronized (images) { queued.remove(key); }
+            try {
+                loadImage(pick);
+            } finally {
+                synchronized (images) { pending.remove(key); }
+            }
+        }
+    }
     private volatile List<Pick> picks = new ArrayList<>();
     private volatile int period = -1;
     private volatile long listAt;
@@ -159,7 +239,7 @@ final class Recs {
     String error() { return error; }
 
     static String periodLabel() {
-        return (Ui.ru ? PERIOD_LABEL_RU : Ui.es ? PERIOD_LABEL_ES : Ui.de ? PERIOD_LABEL_DE : Ui.en ? PERIOD_LABEL_EN : PERIOD_LABEL)
+        return (Ui.ru ? PERIOD_LABEL_RU : Ui.es ? PERIOD_LABEL_ES : Ui.de ? PERIOD_LABEL_DE : Ui.it ? PERIOD_LABEL_IT : Ui.en ? PERIOD_LABEL_EN : PERIOD_LABEL)
                 [period(System.currentTimeMillis())];
     }
 
@@ -177,6 +257,11 @@ final class Recs {
 
     /** This hour's 3, movies only ("movie") or shows only ("tv"); null = both (the home screen tabs). */
     List<Pick> now(String kind) {
+        return deck(kind, 3);
+    }
+
+    /** Up to `max` for a tab's carousel, starting with this hour's 3. */
+    List<Pick> deck(String kind, int max) {
         List<Pick> list = new ArrayList<>();
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
         Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title (this runs every 15 s)
@@ -189,7 +274,7 @@ final class Recs {
         // Three per hour, never two from the same franchise ("Law & Order" and "Law & Order: Special…").
         List<Pick> out = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        for (int i = 0; i < list.size() && out.size() < 3; i++) {
+        for (int i = 0; i < list.size() && out.size() < max; i++) {
             Pick p = list.get((int) ((hour * 3 + i) % list.size()));
             if (seen.add(franchise(p.title))) out.add(p);
         }
@@ -211,20 +296,35 @@ final class Recs {
 
     /** The pick's ready backdrop (or null: builds it in the background and notifies when it's ready). */
     Backdrop backdrop(Pick p) {
+        return request(p, true);
+    }
+
+    /** Builds the pick's image in the background, behind anything on screen (switching to it is then instant). */
+    void prefetch(Pick p) {
+        request(p, false);
+    }
+
+    private Backdrop request(Pick p, boolean high) {
         if (p == null || p.backdrop == null) return null;
         final String key = p.backdrop;    // the details may swap the image midway
+        ImageTask task;
         synchronized (images) {
             Backdrop b = images.get(key);
             if (b != null) return b;
-            if (!pending.add(key)) return null;
-        }
-        io.execute(() -> {
-            try {
-                loadImage(p);
-            } finally {
-                synchronized (images) { pending.remove(key); }
+            if (!pending.add(key)) {
+                ImageTask q = queued.get(key);
+                if (high && q != null && !q.high && imageIo.getQueue().remove(q)) {   // came on screen: move it up
+                    q.high = true;
+                    q.seq = ++taskSeq;
+                    imageIo.execute(q);
+                }
+                return null;
             }
-        });
+            task = new ImageTask(p, high);
+            task.seq = ++taskSeq;
+            queued.put(key, task);
+        }
+        imageIo.execute(task);
         return null;
     }
 
@@ -233,7 +333,8 @@ final class Recs {
     }
 
     private File imageFile(Pick p) {
-        return new File(new File(context.getCacheDir(), "recs"), p.backdrop.replace("/", ""));
+        String name = p.backdrop.startsWith("http") ? "s" + Integer.toHexString(p.backdrop.hashCode()) + ".jpg" : p.backdrop.replace("/", "");
+        return new File(new File(context.getCacheDir(), "recs"), name);
     }
 
     /** With a key: fetches the list if stale or the time of day (morning/afternoon/night) changed; then the details. */
@@ -246,7 +347,7 @@ final class Recs {
         if (!newKey && failedAt != 0 && sinceFail >= 0 && sinceFail < 10 * 60_000L) return;
         int p = period(now);
         boolean stale = newKey || p != period || now - listAt > LIST_EVERY || now < listAt || picks.isEmpty()
-                || !listLanguage.equals(Ui.language);
+                || !listLanguage.equals(Ui.language) || !(lang() + "/" + REGION).equals(cache.getString("langRegion", ""));
         boolean missing = false;
         for (Pick pick : wanted()) missing |= !pick.detailed || !hasImage(pick);
         if (!stale && !missing) return;
@@ -359,7 +460,7 @@ final class Recs {
         List<Pick> out = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
         for (String kind : new String[] {null, "movie", "tv"}) {
-            for (Pick p : now(kind)) if (seen.add(key(p))) out.add(p);
+            for (Pick p : deck(kind, 8)) if (seen.add(key(p))) out.add(p);
         }
         return out;
     }
@@ -369,7 +470,7 @@ final class Recs {
         return p.kind + ":" + p.id;
     }
 
-    private void notifyListeners() {
+    void notifyListeners() {
         main.post(() -> { for (Listener l : new ArrayList<>(listeners)) l.onRecs(); });
     }
 
@@ -390,6 +491,7 @@ final class Recs {
         String common = "&language=" + lang() + "&watch_region=" + REGION + "&with_watch_monetization_types=flatrate&include_adult=false"
                 + "&sort_by=popularity.desc&with_watch_providers=" + URLEncoder.encode(ids.toString(), "UTF-8")
                 + (Config.HIDE_ANIMATION ? "&without_genres=" + ANIMATION : "");
+        // genres_include / genres_exclude: filtered per title in add() (movie and TV ids differ, so not in the query).
         // 1. Trending this week (TMDB goes by what people are watching and searching for right now), only what is
         //    on one of the TV's services: the details say where (and are then ready).
         List<Pick> hotMovies = new ArrayList<>(), hotShows = new ArrayList<>();
@@ -418,8 +520,8 @@ final class Recs {
         // Trending first, then the new releases; movies and shows alternating, without repeats, up to 24.
         List<Pick> list = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        alternate(list, seen, hotMovies, hotShows, 24);
-        alternate(list, seen, newMovies, newShows, 24);
+        alternate(list, seen, hotMovies, hotShows, 40);
+        alternate(list, seen, newMovies, newShows, 40);
         if (list.isEmpty()) throw new IOException("TMDB returned no recommendations");
         picks = list;
         period = p;
@@ -431,6 +533,7 @@ final class Recs {
     private static String lang() {
         if (Ui.ru) return "ru-RU";
         if (Ui.es) return "ES".equals(java.util.Locale.getDefault().getCountry()) ? "es-ES" : "es-MX";
+        if (Ui.it) return "it-IT";
         if (Ui.de) return "de-DE";   // TMDB's de-AT and de-CH have few translations of their own
         return Ui.en ? "en-US" : "pt-BR";
     }
@@ -449,10 +552,72 @@ final class Recs {
         return String.format(Locale.US, "%04d-%02d-%02d", cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH));
     }
 
+    /** TMDB genre names (English and Italian, lowercase) → ids, movies and TV together. */
+    private static final Object[][] GENRE_IDS = {
+        {new String[] {"action", "azione"}, new int[] {28, 10759}},
+        {new String[] {"adventure", "avventura"}, new int[] {12, 10759}},
+        {new String[] {"action & adventure", "azione e avventura", "action & adventure"}, new int[] {28, 12, 10759}},
+        {new String[] {"animation", "animazione"}, new int[] {16}},
+        {new String[] {"comedy", "commedia"}, new int[] {35}},
+        {new String[] {"crime"}, new int[] {80}},
+        {new String[] {"documentary", "documentario"}, new int[] {99}},
+        {new String[] {"drama", "dramma"}, new int[] {18}},
+        {new String[] {"family", "famiglia"}, new int[] {10751}},
+        {new String[] {"fantasy"}, new int[] {14, 10765}},
+        {new String[] {"history", "storia", "storico"}, new int[] {36}},
+        {new String[] {"horror"}, new int[] {27}},
+        {new String[] {"music", "musica", "musicale"}, new int[] {10402}},
+        {new String[] {"mystery", "mistero"}, new int[] {9648}},
+        {new String[] {"romance", "romantico", "sentimentale"}, new int[] {10749}},
+        {new String[] {"science fiction", "sci-fi", "fantascienza"}, new int[] {878, 10765}},
+        {new String[] {"sci-fi & fantasy", "fantascienza e fantasy", "sci-fi & fantasy"}, new int[] {878, 14, 10765}},
+        {new String[] {"tv movie", "film tv", "televisione film"}, new int[] {10770}},
+        {new String[] {"thriller"}, new int[] {53}},
+        {new String[] {"war", "guerra"}, new int[] {10752, 10768}},
+        {new String[] {"war & politics", "guerra e politica", "politics", "politica"}, new int[] {10752, 10768}},
+        {new String[] {"western"}, new int[] {37}},
+        {new String[] {"kids", "bambini", "ragazzi"}, new int[] {10762}},
+        {new String[] {"news", "notizie", "telegiornale"}, new int[] {10763}},
+        {new String[] {"reality"}, new int[] {10764}},
+        {new String[] {"soap", "soap opera"}, new int[] {10766}},
+        {new String[] {"talk", "talk show"}, new int[] {10767}},
+    };
+    private static final java.util.Set<Integer> INCLUDE = genreIds(Config.GENRES_INCLUDE), EXCLUDE = genreIds(Config.GENRES_EXCLUDE);
+
+    private static java.util.Set<Integer> genreIds(String list) {
+        java.util.Set<Integer> out = new java.util.HashSet<>();
+        for (String raw : list.split(",")) {
+            String name = raw.trim().toLowerCase(Locale.ROOT);
+            if (name.isEmpty()) continue;
+            boolean found = false;
+            for (Object[] g : GENRE_IDS) {
+                if (!Arrays.asList((String[]) g[0]).contains(name)) continue;
+                for (int id : (int[]) g[1]) out.add(id);
+                found = true;
+            }
+            if (!found) {
+                try { out.add(Integer.parseInt(name)); } catch (NumberFormatException e) { AppLog.w("unknown genre: " + raw.trim()); }
+            }
+        }
+        return out;
+    }
+
+    private static boolean genresOk(JSONArray ids) {
+        if (INCLUDE.isEmpty() && EXCLUDE.isEmpty()) return true;
+        boolean any = false;
+        for (int i = 0; ids != null && i < ids.length(); i++) {
+            int id = ids.optInt(i);
+            if (EXCLUDE.contains(id)) return false;
+            any |= INCLUDE.contains(id);
+        }
+        return INCLUDE.isEmpty() || any;
+    }
+
     private static void add(List<Pick> list, JSONObject o, String kind) {
         String backdrop = o.optString("backdrop_path", "");
         if (backdrop.isEmpty() || "null".equals(backdrop)) return;
         if (Config.HIDE_ANIMATION && animated(o)) return;
+        if (!genresOk(o.optJSONArray("genre_ids"))) return;
         Pick p = new Pick();
         p.id = o.optInt("id");
         p.kind = kind;
@@ -490,6 +655,7 @@ final class Recs {
             int seasons = o.optInt("number_of_seasons");
             if (seasons > 0 && Ui.ru) parts.add(Russian.count(seasons, "сезон", "сезона", "сезонов"));
             else if (seasons > 0 && Ui.en) parts.add(seasons == 1 ? "1 season" : seasons + " seasons");
+            else if (seasons > 0 && Ui.it) parts.add(seasons == 1 ? "1 stagione" : seasons + " stagioni");
             else if (seasons > 0 && Ui.de) parts.add(seasons == 1 ? "1 Staffel" : seasons + " Staffeln");
             else if (seasons > 0) parts.add(seasons == 1 ? "1 temporada" : seasons + " temporadas");
         }
@@ -537,6 +703,11 @@ final class Recs {
         {"War & Politics", "Guerra y Política"}, {"Kids", "Infantil"}, {"News", "Noticias"},
         {"Soap", "Telenovela"}, {"Talk", "Entrevistas"},
     };
+    private static final String[][] GENRES_IT = {
+        {"Action & Adventure", "Azione e avventura"}, {"Sci-Fi & Fantasy", "Fantascienza e fantasy"},
+        {"War & Politics", "Guerra e politica"}, {"Kids", "Bambini"}, {"News", "Notizie"}, {"Soap", "Soap opera"},
+        {"Talk", "Talk show"},
+    };
     private static final String[][] GENRES_DE = {
         {"Action & Adventure", "Action & Abenteuer"}, {"War & Politics", "Krieg & Politik"}, {"Kids", "Kinder"},
         {"News", "Nachrichten"}, {"Soap", "Seifenoper"}, {"Talk", "Talkshow"},
@@ -544,7 +715,7 @@ final class Recs {
 
     private static String genre(String name) {
         if (Ui.ru) return Russian.text(name);
-        for (String[] g : Ui.es ? GENRES_ES : Ui.de ? GENRES_DE : GENRES_PT) if (g[0].equalsIgnoreCase(name)) return g[1];
+        for (String[] g : Ui.es ? GENRES_ES : Ui.de ? GENRES_DE : Ui.it ? GENRES_IT : GENRES_PT) if (g[0].equalsIgnoreCase(name)) return g[1];
         return name;
     }
 
@@ -587,7 +758,8 @@ final class Recs {
     }
 
     private long sourceStamp() {
-        long stamp = (Config.TMDB_KEY.hashCode() * 31L + REGION.hashCode()) * 31L + (Config.HIDE_ANIMATION ? 1 : 0);
+        long stamp = (Config.TMDB_KEY.hashCode() * 31L + REGION.hashCode()) * 31L + (Config.HIDE_ANIMATION ? 1 : 0)
+                + 31L * (Config.GENRES_INCLUDE + "|" + Config.GENRES_EXCLUDE).hashCode();
         for (String[] service : SERVICES) stamp = stamp * 31L + (installed(service[2]) ? service[2].hashCode() : 0);
         return stamp;
     }
@@ -625,7 +797,7 @@ final class Recs {
         //noinspection ResultOfMethodCallIgnored
         f.getParentFile().mkdirs();
         File part = new File(f.getPath() + ".part");
-        HttpURLConnection c = (HttpURLConnection) new URL(IMAGES + p.backdrop).openConnection();
+        HttpURLConnection c = (HttpURLConnection) new URL(p.backdrop.startsWith("http") ? p.backdrop : IMAGES + p.backdrop).openConnection();
         c.setConnectTimeout(8000);
         c.setReadTimeout(20000);
         try (InputStream in = c.getInputStream(); FileOutputStream out = new FileOutputStream(part)) {
@@ -648,6 +820,23 @@ final class Recs {
         synchronized (images) {
             if (images.containsKey(p.backdrop)) return;
         }
+        if (p.backdrop.startsWith("asset:")) {   // bundled card (StoreApps): already 16:9, small
+            try (InputStream in = context.getAssets().open(p.backdrop.substring(6))) {
+                Bitmap b = BitmapFactory.decodeStream(in);
+                if (b == null) throw new IOException("unreadable asset");
+                boolean forLight = light;
+                Backdrop backdrop = Backdrop.make(b, forLight);
+                if (forLight != light) return;
+                synchronized (images) {
+                    images.put(p.backdrop, backdrop);
+                    evict(forLight);
+                }
+                notifyListeners();
+            } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                AppLog.w("store image: " + e.getMessage());
+            }
+            return;
+        }
         File f = imageFile(p);
         try {
             download(p);
@@ -656,7 +845,9 @@ final class Recs {
             BitmapFactory.decodeFile(f.getPath(), bounds);
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = 1;
-            while (bounds.outWidth / (opts.inSampleSize * 2) >= Backdrop.W) opts.inSampleSize *= 2;
+            // Decoded only as large as it's used: the light design's cards work from a ~960 px copy.
+            int need = light ? Backdrop.LIGHT_W : Backdrop.W;
+            while (bounds.outWidth / (opts.inSampleSize * 2) >= need) opts.inSampleSize *= 2;
             Bitmap b = BitmapFactory.decodeFile(f.getPath(), opts);
             if (b == null) throw new IOException("unreadable image");
             AppLog.w("backdrop \u201c" + p.title + "\u201d: " + bounds.outWidth + "×" + bounds.outHeight + " → " + Backdrop.W + "×" + Backdrop.H);
@@ -665,7 +856,7 @@ final class Recs {
             if (forLight != light) return;   // the design changed midway: this one is stale
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
-                while (images.size() > (forLight ? 10 : 4)) images.remove(images.keySet().iterator().next());
+                evict(forLight);
             }
             notifyListeners();
         } catch (IOException | RuntimeException | OutOfMemoryError e) {
@@ -693,9 +884,9 @@ final class Recs {
             if (parts[i].lastModified() < stale) parts[i].delete();
         }
         File[] files = dir.listFiles((d, name) -> !name.endsWith(".part"));
-        if (files == null || files.length <= 24) return;
+        if (files == null || files.length <= 60) return;
         Arrays.sort(files, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-        for (int i = 0; i < files.length - 24; i++) {
+        for (int i = 0; i < files.length - 60; i++) {
             //noinspection ResultOfMethodCallIgnored
             files[i].delete();
         }
@@ -712,7 +903,7 @@ final class Recs {
                         .put("detailed", p.detailed));
             }
             cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
-                    .putString("language", listLanguage)
+                    .putString("language", listLanguage).putString("langRegion", lang() + "/" + REGION)
                     .putLong("keyStamp", keyStamp).putInt("version", CACHE_VERSION).apply();
         } catch (Exception ignored) {
         }

@@ -70,8 +70,8 @@ final class Russian {
             case "Switching the home screen and screensaver…": return "Переключение главного экрана и заставки…";
             case "Android didn't accept the new home screen": return "Android не принял новый главный экран";
             case "Turning off apps (": return "Отключение приложений (";
-            case "Measuring Free My TV…": return "Замер Free My TV…";
-            case "Couldn't turn on Free My TV: ": return "Не удалось включить Free My TV: ";
+            case "Measuring Launcher…": return "Замер Launcher…";
+            case "Couldn't turn on Launcher: ": return "Не удалось включить Launcher: ";
             case "Turning the apps back on…": return "Включение приложений…";
             case "Turning apps back on (": return "Включение приложений (";
             case "Restoring the original home screen…": return "Восстановление заводского главного экрана…";
@@ -79,13 +79,13 @@ final class Russian {
             case "the original home screen": return "заводской главный экран";
             case "Original mode, but I couldn't turn back on: ": return "Заводской режим, но не удалось включить: ";
             case "Couldn't go back to the original: ": return "Не удалось восстановить заводской режим: ";
-            case "Free My TV's home screen crashed 3 times in a row; I switched back to the original one.": return "Главный экран Free My TV аварийно завершился 3 раза подряд; восстановлен заводской главный экран.";
+            case "Launcher's home screen crashed 3 times in a row; I switched back to the original one.": return "Главный экран Launcher аварийно завершился 3 раза подряд; восстановлен заводской главный экран.";
             case "the home screen": return "главный экран";
             case "the screensaver": return "заставка";
-            case "Couldn't check Free My TV: ": return "Не удалось проверить Free My TV: ";
+            case "Couldn't check Launcher: ": return "Не удалось проверить Launcher: ";
             case "The TV update turned back on ": return "После обновления телевизора снова включены: ";
             case "Turned off what was missing: ": return "Дополнительно отключены: ";
-            case "The TV was updated; Free My TV is still on.": return "Телевизор обновлён; Free My TV по-прежнему включён.";
+            case "The TV was updated; Launcher is still on.": return "Телевизор обновлён; Launcher по-прежнему включён.";
             case "Connecting…": return "Подключение…";
             case "Accept “Allow USB debugging?” on the TV (tick “Always allow”).": return "На телевизоре разрешите отладку по USB и отметьте «Всегда разрешать».";
             case "Language": return "Язык";
@@ -163,7 +163,7 @@ final class Russian {
             case "Soap": return "Мыльная опера";
             case "Talk": return "Ток-шоу";
             case "": return "";
-            case "Free My TV's home screen ran into a problem.\nGoing back to the TV's original home screen…": return "Ошибка главного экрана Free My TV.\nВозвращаемся к заводскому главному экрану…";
+            case "Launcher's home screen ran into a problem.\nGoing back to the TV's original home screen…": return "Ошибка главного экрана Launcher.\nВозвращаемся к заводскому главному экрану…";
             case "debugging is off on the TV (port 5555 closed)": return "отладка на телевизоре выключена (порт 5555 закрыт)";
             case "debugging permission wasn't accepted on the TV": return "на телевизоре не разрешена отладка";
             case "the TV's ADB didn't respond": return "ADB телевизора не ответил";
@@ -181,7 +181,7 @@ final class Russian {
                         + "Недоступные сети там не отображаются: Claude Code может удалить их с компьютера.";
             default:
                 // Notices are saved in the language in use when they were generated.
-                String[] prefixes = {"Couldn't check Free My TV: ", "Couldn't turn on Free My TV: ",
+                String[] prefixes = {"Couldn't check Launcher: ", "Couldn't turn on Launcher: ",
                         "Couldn't go back to the original: ", "Original mode, but I couldn't turn back on: "};
                 for (String p : prefixes) if (english.startsWith(p)) return text(p) + text(english.substring(p.length()));
                 String shelfPrefix = "OK adds or removes (up to ";
@@ -190,10 +190,10 @@ final class Russian {
                     String n = english.substring(shelfPrefix.length(), english.length() - shelfSuffix.length());
                     return "OK — добавить или убрать (до " + n + "). ← → — изменить порядок.";
                 }
-                String prefix = "Free My TV is on: new home screen and screensaver, ";
+                String prefix = "Launcher is on: new home screen and screensaver, ";
                 if (english.startsWith(prefix) && english.endsWith(" apps turned off.")) {
                     String n = english.substring(prefix.length(), english.length() - " apps turned off.".length());
-                    return "Free My TV включён: новый главный экран и заставка; отключено приложений: " + n + ".";
+                    return "Launcher включён: новый главный экран и заставка; отключено приложений: " + n + ".";
                 }
                 if (english.startsWith("On · ") && english.endsWith(" titles from the TV's apps, 3 new ones every hour.")) {
                     String n = english.substring(5, english.length() - " titles from the TV's apps, 3 new ones every hour.".length());

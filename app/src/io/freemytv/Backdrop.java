@@ -27,7 +27,7 @@ final class Backdrop {
     private static final float UI_SCALE = uiScale();
     static final int W = ui(1920), H = ui(1080), FW = 192, FH = 108, GW = 480, GH = 270;
     /** The cards at their focused size (1.05×): the wide one and the two tall ones. */
-    static final int WIDE_W = ui(1092), WIDE_H = ui(464), TALL_W = ui(336), TALL_H = ui(464);
+    static final int WIDE_W = ui(800), WIDE_H = ui(450), TALL_W = ui(16), TALL_H = ui(16);   // 16:9 cards (all carousel sizes); tall unused
 
     private static float uiScale() {
         android.util.DisplayMetrics m = android.content.res.Resources.getSystem().getDisplayMetrics();
@@ -46,6 +46,48 @@ final class Backdrop {
     final Bitmap lightImage;            // by day: the background (the lightened frosted version, scaled up on screen)
     final int[] nightFrost, nightGlass; // at night: frosted (the bottom drawer's frosted glass) and glass, darkened
     final Bitmap nightImage;            // at night: the background (the darkened frosted version)
+    /** The photo's vibrant dominant color (opaque RGB), or 0 for a photo with no real color: the home's tint. */
+    int vibrant;
+    /** The background with the cover's soft glow baked in (by day, at night): built once, on first use (#91). */
+    Bitmap tintedLight, tintedNight;
+    /** Dark only (#98): the glass version, darkened, packed as RGB 565 (half of an int[]; expanded when shown). */
+    short[] glass565;
+
+    /** The dark glass image into `out` (GW × GH ARGB), or null if this backdrop has none. */
+    int[] nightGlassInto(int[] out) {
+        if (glass565 == null) return nightGlass;
+        for (int i = 0; i < glass565.length; i++) {
+            int v = glass565[i] & 0xFFFF;
+            int r = (v >> 11) & 31, g = (v >> 5) & 63, b = v & 31;
+            out[i] = 0xFF000000 | ((r << 3 | r >> 2) << 16) | ((g << 2 | g >> 4) << 8) | (b << 3 | b >> 2);
+        }
+        return out;
+    }
+
+    /** Roughly what this backdrop holds (heap, native and GPU), for the cache's byte budget. */
+    int bytes() {
+        int n = 0;
+        if (wide != null) n += wide.getWidth() * wide.getHeight() * (wide.getConfig() == Bitmap.Config.ARGB_8888 ? 4 : 2);
+        if (image != null) n += image.getWidth() * image.getHeight() * 4;
+        if (glass565 != null) n += glass565.length * 2;
+        if (frost != null) n += frost.length * 4;
+        if (glass != null) n += glass.length * 4;
+        if (nightFrost != null) n += nightFrost.length * 4;
+        if (nightGlass != null) n += nightGlass.length * 4;
+        if (light != null) n += light.length * 4;
+        if (lightGlass != null) n += lightGlass.length * 4;
+        n += 2 * FW * FH * 4;   // the background bitmaps (and the tinted copy)
+        return n;
+    }
+
+    private static short[] pack565(int[] px) {
+        short[] out = new short[px.length];
+        for (int i = 0; i < px.length; i++) {
+            int p = px[i];
+            out[i] = (short) ((((p >> 16) & 0xF8) << 8) | (((p >> 8) & 0xFC) << 3) | ((p & 0xF8) >> 3));
+        }
+        return out;
+    }
 
     private Backdrop(Bitmap image, int[] frost, int[] glass, Bitmap wide, Bitmap tall, int[] light, int[] lightGlass,
                      int[] night, int[] nightGlass) {
@@ -62,25 +104,50 @@ final class Backdrop {
         nightImage = night == null ? null : Bitmap.createBitmap(night, FW, FH, Bitmap.Config.ARGB_8888);
     }
 
+    /** The light design's working copy: a bit larger than the focused card (everything else is much smaller). */
+    static final int LIGHT_W = ui(960), LIGHT_H = ui(540);
+
     static Backdrop make(Bitmap src, boolean forLight) {
+        // Light design: the cards (800 × 450 at most) and the small glass/frost copies all come from a 960 × 540 copy,
+        // a quarter of the pixels of a full-screen one (measured: the build was most of the ~0.5 s per image).
+        int W = forLight ? LIGHT_W : Backdrop.W, H = forLight ? LIGHT_H : Backdrop.H;
         Bitmap out = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(out);
         Paint photo = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
         float scale = Math.max((float) W / src.getWidth(), (float) H / src.getHeight());
         float sw = src.getWidth() * scale, sh = src.getHeight() * scale;
-        c.drawBitmap(src, null, new RectF((W - sw) / 2, (H - sh) / 2, (W + sw) / 2, (H + sh) / 2), photo);
-        src.recycle();
+        boolean square = src.getWidth() < src.getHeight() * 1.3f;
+        if (square) {
+            // Square art (music, #98): a soft, dark, blurred copy fills the 16:9 frame; the art sits whole in the middle.
+            Bitmap tiny = Bitmap.createScaledBitmap(src, 16, 9, true);
+            c.drawBitmap(tiny, null, new RectF(0, 0, W, H), photo);
+            tiny.recycle();
+            c.drawColor(0x8C000000);
+            float a = H * 0.86f, ax = (W - a) / 2, ay = (H - a) / 2;
+            c.drawBitmap(src, null, new RectF(ax, ay, ax + a, ay + a), photo);
+        } else {
+            c.drawBitmap(src, null, new RectF((W - sw) / 2, (H - sh) / 2, (W + sw) / 2, (H + sh) / 2), photo);
+        }
+        if (!(forLight && square)) src.recycle();
         if (forLight) {
             // Light design: everything comes from the photo without scrims.
-            Bitmap wide = card(out, WIDE_W, WIDE_H), tall = card(out, TALL_W, TALL_H);
-            int[] frost = reduce(out, FW, FH, 3, 3);
-            int[] light = whiten(frost.clone(), 0.82f);
-            int[] glass = reduce(out, GW, GH, 2, 2);
-            int[] lightGlass = whiten(glass.clone(), 0.74f);
-            int[] night = darken(frost.clone(), 0.76f);
-            int[] nightGlass = darken(glass, 0.56f);
+            // Dark only (#98): no lightened copies; the card in RGB 565 (dithered; a photo has no alpha) and the glass
+            // packed in 565: about a third of what each image held before.
+            Bitmap wide = card(out, WIDE_W, WIDE_H);
+            if (square) {
+                // The square tile shows the art whole (above); the background, the dock's glass and the tint take the
+                // same art cover-filled across the 16:9 frame, like any photo (no dark letterbox in the reflection).
+                c.drawBitmap(src, null, new RectF((W - sw) / 2, (H - sh) / 2, (W + sw) / 2, (H + sh) / 2), photo);
+                src.recycle();
+            }
+            int[] night = darken(reduce(out, FW, FH, 3, 3), 0.76f);
+            int[] nightGlass = darken(reduce(out, GW, GH, 2, 2), 0.56f);
+            int tint = vibrant(out);
             out.recycle();
-            return new Backdrop(null, frost, null, wide, tall, light, lightGlass, night, nightGlass);
+            Backdrop b = new Backdrop(null, null, null, wide, null, null, null, night, null);
+            b.glass565 = pack565(nightGlass);
+            b.vibrant = tint;
+            return b;
         }
 
         float boost = Math.max(0, Math.min(0.3f, (luminance(out, 0, 0.22f, 0.5f, 0.62f) - 0.22f) * 1.1f));
@@ -108,6 +175,49 @@ final class Backdrop {
         int[] frost = reduce(out, FW, FH, 3, 3);
         int[] glass = reduce(out, GW, GH, 2, 2);
         return new Backdrop(gpu(out), frost, glass, null, null, null, null, null, null);
+    }
+
+    /**
+     * The photo's vibrant dominant color, from a 48×27 copy (1,296 pixels, built here on the background thread with the
+     * rest of the backdrop, so it is cached with it): hues in 24 buckets, each pixel weighted by how saturated it is
+     * and by how far it is from black and white; the heaviest bucket (with its two neighbours) wins and its average
+     * color is returned. A gray or near-black photo returns 0 (no tint).
+     */
+    static int vibrant(Bitmap photo) {
+        Bitmap s = Bitmap.createScaledBitmap(photo, 48, 27, true);
+        int n = s.getWidth() * s.getHeight();
+        int[] px = new int[n];
+        s.getPixels(px, 0, s.getWidth(), 0, 0, s.getWidth(), s.getHeight());
+        if (s != photo) s.recycle();
+        final int B = 24;
+        float[] w = new float[B], r = new float[B], g = new float[B], bl = new float[B];
+        float[] hsv = new float[3];
+        for (int p : px) {
+            android.graphics.Color.colorToHSV(p, hsv);
+            float sat = hsv[1], val = hsv[2];
+            if (sat < 0.18f || val < 0.16f) continue;
+            float weight = sat * sat * (1 - Math.abs(val - 0.62f));
+            int i = Math.min(B - 1, (int) (hsv[0] / 360f * B));
+            w[i] += weight;
+            r[i] += weight * ((p >> 16) & 255);
+            g[i] += weight * ((p >> 8) & 255);
+            bl[i] += weight * (p & 255);
+        }
+        int best = -1;
+        float bestW = 0;
+        for (int i = 0; i < B; i++) {
+            float sum = w[i] + 0.5f * (w[(i + 1) % B] + w[(i + B - 1) % B]);
+            if (sum > bestW) { bestW = sum; best = i; }
+        }
+        // Too little color (under ~3% of the frame at full weight): leave the background neutral.
+        if (best < 0 || bestW < n * 0.03f * 0.25f) return 0;
+        float tw = 0, tr = 0, tg = 0, tb = 0;
+        for (int d = -1; d <= 1; d++) {
+            int i = (best + d + B) % B;
+            float f = d == 0 ? 1 : 0.5f;
+            tw += w[i] * f; tr += r[i] * f; tg += g[i] * f; tb += bl[i] * f;
+        }
+        return 0xFF000000 | (Math.round(tr / tw) << 16) | (Math.round(tg / tw) << 8) | Math.round(tb / tw);
     }
 
     /** How many times smaller the screensaver photo's frosted version is (the glass math uses the same number). */
@@ -165,12 +275,22 @@ final class Backdrop {
             if (b != full) b.recycle();
             b = half;
         }
-        Bitmap out = Bitmap.createScaledBitmap(b, w, h, true);
-        if (b != full && b != out) b.recycle();
+        // RGB 565 with dithering (#98): half the memory of ARGB on the GPU; a photo needs no alpha.
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565);
+        new Canvas(out).drawBitmap(b, null, new RectF(0, 0, w, h), new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG));
+        if (b != full) b.recycle();
         return gpu(out);
     }
 
     /** Copies it to GPU memory (cheap to draw; the process doesn't keep the pixels). */
+    /** An opaque photo on the GPU in RGB 565 (dithered): half the memory of ARGB (#98: the screensaver's photos). */
+    static Bitmap gpu565(Bitmap b) {
+        Bitmap o = Bitmap.createBitmap(b.getWidth(), b.getHeight(), Bitmap.Config.RGB_565);
+        new Canvas(o).drawBitmap(b, 0, 0, new Paint(Paint.DITHER_FLAG));
+        b.recycle();
+        return gpu(o);
+    }
+
     static Bitmap gpu(Bitmap b) {
         Bitmap g = b.copy(Bitmap.Config.HARDWARE, false);
         if (g == null) return b;
@@ -247,7 +367,7 @@ final class Backdrop {
     }
 
     /** Average luminance (0 to 1) of a rectangle given as fractions of the image, by sampling. */
-    private static float luminance(Bitmap b, float x0, float y0, float x1, float y1) {
+    static float luminance(Bitmap b, float x0, float y0, float x1, float y1) {
         float sum = 0;
         int count = 0;
         for (int j = 0; j < 24; j++) {
