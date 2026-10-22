@@ -1,13 +1,13 @@
 # Launcher Sala – note di progetto
 
-Launcher personalizzato per il **Chromecast con Google TV "Sala"** (`192.168.1.7:5555`). È un fork di FreeMyTV (pacchetto `io.freemytv`, firma invariata), rinominato **"Launcher"**. Branch locale: `launcher-sala`.
+Launcher personalizzato per il **Chromecast con Google TV "Sala"** (IP della tua TV). È un fork di FreeMyTV (pacchetto `io.freemytv`, firma invariata), rinominato **"Launcher"**. Branch locale: `launcher-sala`.
 
 ## Build e installazione
 ```sh
 cd ~/src/free-my-tv
 ./build.sh
-~/platform-tools/adb connect 192.168.1.7:5555
-~/platform-tools/adb -s 192.168.1.7:5555 install -r FreeMyTV.apk
+~/platform-tools/adb connect <IP-TV>:5555
+~/platform-tools/adb -s <IP-TV>:5555 install -r FreeMyTV.apk
 ```
 Ripristinare il launcher di Google TV: sulla TV, Impostazioni > Schermata Home (scegliere Google TV), oppure disinstallare `io.freemytv`. Il launcher di riserva `com.google.android.tvlauncher` resta sempre installato.
 
