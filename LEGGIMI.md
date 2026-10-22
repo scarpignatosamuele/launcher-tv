@@ -1,4 +1,4 @@
-# Launcher Sala
+# Launcher TV
 
 Un launcher personalizzato per **Chromecast con Google TV** (e altri Google TV / Android TV). È un fork di [Free My TV](https://github.com/simbasjungles/free-my-tv) (licenza MIT).
 
@@ -39,8 +39,8 @@ sdkmanager "build-tools;34.0.0" "platforms;android-34"
 
 ## 2. Scarica il progetto
 ```sh
-git clone https://github.com/scarpignatosamuele/launcher-sala.git
-cd launcher-sala
+git clone https://github.com/scarpignatosamuele/launcher-tv.git
+cd launcher-tv
 ```
 
 ## 3. Crea il tuo file di configurazione

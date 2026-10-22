@@ -1,4 +1,4 @@
-> 🇮🇹 **Launcher Sala** (fork personalizzato per Chromecast con Google TV): istruzioni complete in italiano, comprese le chiavi API da crearsi, in **[LEGGIMI.md](LEGGIMI.md)**.
+> 🇮🇹 **Launcher TV** (fork personalizzato per Chromecast con Google TV): istruzioni complete in italiano, comprese le chiavi API da crearsi, in **[LEGGIMI.md](LEGGIMI.md)**.
 
 <div align="center">
 
